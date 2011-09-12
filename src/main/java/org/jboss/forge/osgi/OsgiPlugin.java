@@ -2,10 +2,7 @@ package org.jboss.forge.osgi;
 
 import org.jboss.forge.maven.MavenCoreFacet;
 import org.jboss.forge.maven.MavenPluginFacet;
-import org.jboss.forge.maven.plugins.ConfigurationBuilder;
-import org.jboss.forge.maven.plugins.ConfigurationElementBuilder;
-import org.jboss.forge.maven.plugins.ExecutionBuilder;
-import org.jboss.forge.maven.plugins.MavenPluginBuilder;
+import org.jboss.forge.maven.plugins.*;
 import org.jboss.forge.parser.JavaParser;
 import org.jboss.forge.parser.java.JavaClass;
 import org.jboss.forge.project.Project;
@@ -16,12 +13,10 @@ import org.jboss.forge.project.facets.DependencyFacet;
 import org.jboss.forge.project.facets.JavaSourceFacet;
 import org.jboss.forge.project.facets.WebResourceFacet;
 import org.jboss.forge.project.packaging.PackagingType;
+import org.jboss.forge.resources.java.JavaResource;
 import org.jboss.forge.shell.PromptType;
 import org.jboss.forge.shell.Shell;
-import org.jboss.forge.shell.plugins.Alias;
-import org.jboss.forge.shell.plugins.Command;
-import org.jboss.forge.shell.plugins.Plugin;
-import org.jboss.forge.shell.plugins.RequiresFacet;
+import org.jboss.forge.shell.plugins.*;
 import org.jboss.forge.spec.javaee.PersistenceFacet;
 
 import javax.inject.Inject;
@@ -38,9 +33,7 @@ public class OsgiPlugin implements Plugin {
     public void setup() {
         MavenPluginFacet pluginFacet = project.getFacet(MavenPluginFacet.class);
 
-        DependencyBuilder bundlePluginDependency = DependencyBuilder.create()
-                .setGroupId("org.apache.felix")
-                .setArtifactId("maven-bundle-plugin");
+        DependencyBuilder bundlePluginDependency = createBundlePluginDependency();
 
         MavenPluginBuilder bundlePlugin = MavenPluginBuilder.create().setDependency(bundlePluginDependency);
         ConfigurationElementBuilder instructions = ConfigurationElementBuilder.create().setName("instructions");
@@ -69,9 +62,36 @@ public class OsgiPlugin implements Plugin {
                         .setPhase("process-classes")
                         .addGoal("manifest"));
 
-        //TODO: create blueprint config
-
         pluginFacet.addPlugin(bundlePlugin);
+    }
+
+    private DependencyBuilder createBundlePluginDependency() {
+        return DependencyBuilder.create()
+                .setGroupId("org.apache.felix")
+                .setArtifactId("maven-bundle-plugin");
+    }
+
+    @Command("add-service-component")
+    public void addServiceComponent(@Option(name = "class") JavaResource clazz) {
+        try {
+            String qualifiedName = clazz.getJavaSource().getQualifiedName();
+            MavenPluginFacet pluginFacet = project.getFacet(MavenPluginFacet.class);
+            MavenPlugin plugin = pluginFacet.getPlugin(createBundlePluginDependency());
+            ConfigurationElementBuilder builder = ConfigurationElementBuilder.create();
+            builder.setName("Service-Component").setText(qualifiedName);
+
+            if(plugin.getConfig().hasConfigurationElement("instructions")) {
+                plugin.getConfig().getConfigurationElement("instructions").getChildren().add(builder);
+            } else {
+                ConfigurationElementBuilder instruction = ConfigurationElementBuilder.create().setName("instruction").addChild(builder);
+                plugin.getConfig().addConfigurationElement(instruction);
+            }
+
+            pluginFacet.removePlugin(createBundlePluginDependency());
+            pluginFacet.addPlugin(plugin);
+        } catch (FileNotFoundException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private void createActivator() {
