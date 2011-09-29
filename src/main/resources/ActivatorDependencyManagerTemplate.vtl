@@ -1,0 +1,26 @@
+package $package;
+
+import org.apache.felix.dm.DependencyActivatorBase;
+import org.apache.felix.dm.DependencyManager;
+import org.osgi.framework.BundleContext;
+import ${dmComponentPackage}.${dmComponentName};
+#if($useLogService)
+import org.osgi.service.log.LogService;
+#end
+
+public class $className extends DependencyActivatorBase {
+    @Override
+    public void init(BundleContext bundleContext, DependencyManager dependencyManager) throws Exception {
+        #if($useLogService)
+        dependencyManager.add(createComponent().setImplementation(${dmComponentName}.class)
+            .add(dependencyManager.createServiceDependency().setService(LogService.class).setRequired(true)));
+        #else
+        dependencyManager.add(createComponent().setImplementation(${dmComponentName}.class));
+        #end
+    }
+
+    @Override
+    public void destroy(BundleContext bundleContext, DependencyManager dependencyManager) throws Exception {
+
+    }
+}

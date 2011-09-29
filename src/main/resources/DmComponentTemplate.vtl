@@ -1,0 +1,16 @@
+package $package;
+#if($useLogService)
+import org.osgi.service.log.LogService;
+#end
+
+public class $className {
+    #if($useLogService)
+    private volatile LogService m_log;
+    #end
+
+    public void start() {
+        #if($useLogService)
+        m_log.log(LogService.LOG_DEBUG, "Component started");
+        #end
+    }
+}

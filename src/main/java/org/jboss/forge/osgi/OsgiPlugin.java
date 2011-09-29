@@ -25,7 +25,9 @@ import org.jboss.forge.spec.javaee.PersistenceFacet;
 import javax.inject.Inject;
 import java.io.FileNotFoundException;
 import java.io.StringWriter;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 @Alias("osgi")
@@ -64,9 +66,8 @@ public class OsgiPlugin implements Plugin {
             installJpaInstructions(bundlePlugin, instructions);
         }
 
-        boolean shouldCreateActivator = shell.promptBoolean("Do you want to create an Activator class?", false);
-        if (shouldCreateActivator) {
-            createActivator();
+        if (shouldCreateActivator()) {
+            createActivator(bundlePlugin, shouldUseDmActivator());
             installCoreLibraries();
         } else {
             boolean shouldInstallCoreLibraries = shell.promptBoolean("Do you want to add the OSGI core libraries?", false);
@@ -79,10 +80,15 @@ public class OsgiPlugin implements Plugin {
                 ExecutionBuilder.create()
                         .setId("bundle-manifest")
                         .setPhase("process-classes")
-                        .addGoal("manifest"));
+                        .addGoal("manifest"))
+                .setExtensions(true);
 
         pluginFacet.addPlugin(bundlePlugin);
         shell.println("Packaging type changed to bundle");
+    }
+
+    private boolean shouldCreateActivator() {
+        return shell.promptBoolean("Do you want to create an Activator class?", false);
     }
 
     private DependencyBuilder createBundlePluginDependency() {
@@ -96,7 +102,7 @@ public class OsgiPlugin implements Plugin {
         try {
             String qualifiedName = clazz.getJavaSource().getQualifiedName();
             MavenPluginFacet pluginFacet = project.getFacet(MavenPluginFacet.class);
-            MavenPlugin plugin = pluginFacet.getPlugin(createBundlePluginDependency());
+            MavenPlugin plugin = getBundlePlugin(pluginFacet);
             ConfigurationElementBuilder builder = ConfigurationElementBuilder.create();
             builder.setName("Service-Component").setText(qualifiedName);
 
@@ -114,10 +120,25 @@ public class OsgiPlugin implements Plugin {
         }
     }
 
-    private void createActivator() {
+    private MavenPlugin getBundlePlugin(MavenPluginFacet pluginFacet) {
+        return pluginFacet.getPlugin(createBundlePluginDependency());
+    }
+
+    @Command("install-felix-dm")
+    public void installFelixDm() {
+        installFelixDmDependency();
+        if (shouldCreateActivator()) {
+            MavenPluginFacet pluginFacet = project.getFacet(MavenPluginFacet.class);
+            MavenPlugin plugin = getBundlePlugin(pluginFacet);
+
+            createActivator(MavenPluginBuilder.create(plugin), true);
+        }
+    }
+
+    private void createActivator(MavenPluginBuilder bundlePlugin, boolean useDM) {
         JavaSourceFacet javaSourceFacet = project.getFacet(JavaSourceFacet.class);
 
-        String packageName = shell.promptCommon("What package do you want to use for the Activator class? [" + javaSourceFacet.getBasePackage() +".osgi]", PromptType.JAVA_PACKAGE, javaSourceFacet.getBasePackage() + ".osgi");
+        String packageName = shell.promptCommon("What package do you want to use for the Activator class? [" + javaSourceFacet.getBasePackage() + ".osgi]", PromptType.JAVA_PACKAGE, javaSourceFacet.getBasePackage() + ".osgi");
         String className = shell.prompt("How do you want to name the Activator class? [Activator]", String.class, "Activator");
 
         VelocityContext context = new VelocityContext();
@@ -125,7 +146,19 @@ public class OsgiPlugin implements Plugin {
         context.put("className", className);
 
         StringWriter writer = new StringWriter();
-        Velocity.mergeTemplate("ActivatorTemplate.vtl", "UTF-8", context, writer);
+
+        if (useDM) {
+            boolean useLogService = shell.promptBoolean("Do you want to use the LogService?", true);
+
+            Map<String, String> dmComponent = createDmComponent(useLogService);
+            context.put("dmComponentName", dmComponent.get("className"));
+            context.put("dmComponentPackage", dmComponent.get("package"));
+            context.put("useLogService", useLogService);
+            Velocity.mergeTemplate("ActivatorDependencyManagerTemplate.vtl", "UTF-8", context, writer);
+            installFelixDmDependency();
+        } else {
+            Velocity.mergeTemplate("ActivatorTemplate.vtl", "UTF-8", context, writer);
+        }
 
         JavaClass activatorClass = JavaParser.parse(JavaClass.class, writer.toString());
 
@@ -134,19 +167,75 @@ public class OsgiPlugin implements Plugin {
         } catch (FileNotFoundException e) {
             throw new RuntimeException(e);
         }
+
+        ConfigurationElementBuilder builder = ConfigurationElementBuilder.create();
+        builder.setName("Bundle-Activator").setText(packageName + "." + className);
+
+        if (bundlePlugin.getConfig().hasConfigurationElement("instructions")) {
+            bundlePlugin.getConfig().getConfigurationElement("instructions").getChildren().add(builder);
+        } else {
+            ConfigurationElementBuilder instruction = ConfigurationElementBuilder.create().setName("instructions").addChild(builder);
+            bundlePlugin.getConfig().addConfigurationElement(instruction);
+        }
+    }
+
+    private Map<String, String> createDmComponent(boolean useLogService) {
+        JavaSourceFacet javaSourceFacet = project.getFacet(JavaSourceFacet.class);
+        String packageName = shell.promptCommon("What package do you want to use for the DM component? [" + javaSourceFacet.getBasePackage() + "]", PromptType.JAVA_PACKAGE, javaSourceFacet.getBasePackage());
+        String className = shell.prompt("How do you want to name the DM component class? [DmComponent]", String.class, "DmComponent");
+
+        StringWriter writer = new StringWriter();
+        VelocityContext context = new VelocityContext();
+        context.put("package", packageName);
+        context.put("className", className);
+        context.put("useLogService", useLogService);
+
+        Velocity.mergeTemplate("DmComponentTemplate.vtl", "UTF-8", context, writer);
+
+        JavaClass dmComponentClass = JavaParser.parse(JavaClass.class, writer.toString());
+
+        try {
+            javaSourceFacet.saveJavaSource(dmComponentClass);
+        } catch (FileNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+
+        HashMap<String, String> dmComponent = new HashMap<String, String>();
+        dmComponent.put("className", className);
+        dmComponent.put("package", packageName);
+        return dmComponent;
+    }
+
+    private boolean shouldUseDmActivator() {
+        return shell.promptBoolean("Do you want to use Felix Dependency Manager?", false);
     }
 
     private void installCoreLibraries() {
+        installDependency("org.osgi.core", "org.osgi", "org.osgi.core");
+        installDependency("org.osgi.core.compendium", "org.osgi", "org.osgi.compendium");
+    }
+
+    private void installFelixDmDependency() {
+        installDependency("DependencyManager", "org.apache.felix", "org.apache.felix.dependencymanager");
+    }
+
+    private void installDependency(String name, String groupId, String artifactId) {
         DependencyFacet dependencyFacet = project.getFacet(DependencyFacet.class);
-        DependencyBuilder osgiDependency = DependencyBuilder.create().setGroupId("org.osgi").setArtifactId("org.osgi.core");
-        List<Dependency> versions = dependencyFacet.resolveAvailableVersions(osgiDependency);
-        if (versions.size() > 0) {
-            Dependency version = shell.promptChoiceTyped("Which version of org.osgi.core do you want to install?", versions, versions.get(versions.size() - 1));
-            osgiDependency.setVersion(version.getVersion());
+        DependencyBuilder dependency = DependencyBuilder.create().setGroupId(groupId).setArtifactId(artifactId);
+        if (dependencyFacet.hasDependency(dependency)) {
+            shell.printlnVerbose(name + " was alread installed");
+            return;
         }
 
-        osgiDependency.setScopeType(ScopeType.PROVIDED);
-        dependencyFacet.addDependency(osgiDependency);
+        List<Dependency> versions = dependencyFacet.resolveAvailableVersions(dependency);
+        if (versions.size() > 0) {
+            Dependency version = shell.promptChoiceTyped("Which version of " + name + " do you want to install?", versions, versions.get(versions.size() - 1));
+            dependency.setVersion(version.getVersion());
+        }
+
+        dependency.setScopeType(ScopeType.PROVIDED);
+        dependencyFacet.addDependency(dependency);
+        shell.println(name + " dependency added to the POM file");
     }
 
 
