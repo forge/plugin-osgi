@@ -1,5 +1,7 @@
 package org.jboss.forge.osgi;
 
+import org.apache.velocity.VelocityContext;
+import org.apache.velocity.app.Velocity;
 import org.jboss.forge.maven.MavenCoreFacet;
 import org.jboss.forge.maven.MavenPluginFacet;
 import org.jboss.forge.maven.plugins.*;
@@ -11,6 +13,7 @@ import org.jboss.forge.project.dependencies.DependencyBuilder;
 import org.jboss.forge.project.dependencies.ScopeType;
 import org.jboss.forge.project.facets.DependencyFacet;
 import org.jboss.forge.project.facets.JavaSourceFacet;
+import org.jboss.forge.project.facets.PackagingFacet;
 import org.jboss.forge.project.facets.WebResourceFacet;
 import org.jboss.forge.project.packaging.PackagingType;
 import org.jboss.forge.resources.java.JavaResource;
@@ -21,17 +24,33 @@ import org.jboss.forge.spec.javaee.PersistenceFacet;
 
 import javax.inject.Inject;
 import java.io.FileNotFoundException;
+import java.io.StringWriter;
 import java.util.List;
+import java.util.Properties;
 
 @Alias("osgi")
 @RequiresFacet({DependencyFacet.class, MavenCoreFacet.class, MavenPluginFacet.class})
 public class OsgiPlugin implements Plugin {
-    @Inject Shell shell;
-    @Inject Project project;
+    @Inject
+    Shell shell;
+    @Inject
+    Project project;
+
+    static {
+        Properties properties = new Properties();
+        properties.setProperty("resource.loader", "class");
+        properties.setProperty("class.resource.loader.class", "org.apache.velocity.runtime.resource.loader.ClasspathResourceLoader");
+
+        Velocity.init(properties);
+    }
 
     @Command("setup")
     public void setup() {
         MavenPluginFacet pluginFacet = project.getFacet(MavenPluginFacet.class);
+
+        PackagingFacet packagingFacet = project.getFacet(PackagingFacet.class);
+
+        packagingFacet.setPackagingType(PackagingType.BUNDLE);
 
         DependencyBuilder bundlePluginDependency = createBundlePluginDependency();
 
@@ -63,6 +82,7 @@ public class OsgiPlugin implements Plugin {
                         .addGoal("manifest"));
 
         pluginFacet.addPlugin(bundlePlugin);
+        shell.println("Packaging type changed to bundle");
     }
 
     private DependencyBuilder createBundlePluginDependency() {
@@ -72,7 +92,7 @@ public class OsgiPlugin implements Plugin {
     }
 
     @Command("add-service-component")
-    public void addServiceComponent(@Option(name = "class") JavaResource clazz) {
+    public void addServiceComponent(@Option(name = "class", required = true) JavaResource clazz) {
         try {
             String qualifiedName = clazz.getJavaSource().getQualifiedName();
             MavenPluginFacet pluginFacet = project.getFacet(MavenPluginFacet.class);
@@ -80,7 +100,7 @@ public class OsgiPlugin implements Plugin {
             ConfigurationElementBuilder builder = ConfigurationElementBuilder.create();
             builder.setName("Service-Component").setText(qualifiedName);
 
-            if(plugin.getConfig().hasConfigurationElement("instructions")) {
+            if (plugin.getConfig().hasConfigurationElement("instructions")) {
                 plugin.getConfig().getConfigurationElement("instructions").getChildren().add(builder);
             } else {
                 ConfigurationElementBuilder instruction = ConfigurationElementBuilder.create().setName("instruction").addChild(builder);
@@ -97,29 +117,23 @@ public class OsgiPlugin implements Plugin {
     private void createActivator() {
         JavaSourceFacet javaSourceFacet = project.getFacet(JavaSourceFacet.class);
 
-        String packageName = shell.promptCommon("What package do you want to use for the Activator class?", PromptType.JAVA_PACKAGE, javaSourceFacet.getBasePackage());
-        String className = shell.prompt("How do you want to name the Activator class?", String.class, "Activator");
+        String packageName = shell.promptCommon("What package do you want to use for the Activator class? [" + javaSourceFacet.getBasePackage() +".osgi]", PromptType.JAVA_PACKAGE, javaSourceFacet.getBasePackage() + ".osgi");
+        String className = shell.prompt("How do you want to name the Activator class? [Activator]", String.class, "Activator");
 
-        JavaClass javaClass = JavaParser.create(JavaClass.class)
-                .setName(className)
-                .setPackage(packageName);
+        VelocityContext context = new VelocityContext();
+        context.put("package", packageName);
+        context.put("className", className);
 
-        javaClass.addImport("org.osgi.framework.BundleActivator");
-        javaClass.addImport("org.osgi.framework.BundleContext");
+        StringWriter writer = new StringWriter();
+        Velocity.mergeTemplate("ActivatorTemplate.vtl", "UTF-8", context, writer);
 
-        javaClass.addInterface("BundleActivator");
-
-        javaClass.addField("private static BundleContext context");
-
-        javaClass.addMethod("public void start(BundleContext bundleContext) throws Exception { Activator.context = bundleContext; }").addAnnotation(Override.class);
-        javaClass.addMethod("public void stop(BundleContext bundleContext) throws Exception { Activator.context = null; }").addAnnotation(Override.class);
+        JavaClass activatorClass = JavaParser.parse(JavaClass.class, writer.toString());
 
         try {
-            javaSourceFacet.saveJavaSource(javaClass);
+            javaSourceFacet.saveJavaSource(activatorClass);
         } catch (FileNotFoundException e) {
             throw new RuntimeException(e);
         }
-
     }
 
     private void installCoreLibraries() {
