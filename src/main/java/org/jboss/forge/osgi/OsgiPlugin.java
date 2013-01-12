@@ -222,7 +222,7 @@ public class OsgiPlugin implements Plugin {
     private void installDependency(String name, String groupId, String artifactId) {
         DependencyFacet dependencyFacet = project.getFacet(DependencyFacet.class);
         DependencyBuilder dependency = DependencyBuilder.create().setGroupId(groupId).setArtifactId(artifactId);
-        if (dependencyFacet.hasDependency(dependency)) {
+        if (dependencyFacet.hasDirectDependency(dependency)) {
             shell.printlnVerbose(name + " was alread installed");
             return;
         }
@@ -234,7 +234,7 @@ public class OsgiPlugin implements Plugin {
         }
 
         dependency.setScopeType(ScopeType.PROVIDED);
-        dependencyFacet.addDependency(dependency);
+        dependencyFacet.hasDirectDependency(dependency);
         shell.println(name + " dependency added to the POM file");
     }
 
